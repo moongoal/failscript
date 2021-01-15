@@ -5,6 +5,9 @@ end
 -- config
 --CFG_FILE = 'D:\\Users\\moongoal\\SteamLibrary\\steamapps\\common\\X-Plane 11\\Resources\\plugins\\FlyWithLua\\Scripts\\failprofile.csv'
 CFG_FILE = SCRIPT_DIRECTORY .. 'failprofile.csv'
+CFG_MAX_TIME_BETWEEN_FAILURES = 3 -- Max mean time between failures (hrs)
+CFG_MAX_FAIL_SPEED = 300 -- Max failure speed (kts, groundspeed)
+CFG_MAX_FAIL_HEIGHT = 40000 -- Max failure height (feet, AGL)
 
 -- failure_enum
 -- from https://forums.x-plane.org/index.php?/forums/topic/34811-what-type-is-failure_enum/
@@ -17,28 +20,44 @@ FAILURE_CTRL = 5 -- = fail if CTRL f or JOY
 FAILURE_INOP = 6 -- = inoperative
 
 -- state
-STATE_FAILED = 0
+STATE_FAILED = false
+STATE_FAIL_SPEED = 0 -- Speed at which FAILURE_EXACT_SPEED failures will occur - computed in init()
+STATE_FAIL_HEIGHT = 0 -- Height at which FAILURE_EXACT_SPEED failures will occur - computed in init()
+STATE_FAIL_AT_MEAN_TIME = {} -- Array of fail_data not yet failed
+STATE_FAIL_AT_SPEED = {} -- Array of fail_data not yet failed
+STATE_FAIL_AT_HEIGHT = {} -- Array of fail_data not yet failed
 
 -- Enable debug mode if running standalone
 -- Debug mode will not interact with X-Plane nut instead output to console every dataref change
 if XPLANE_VERSION then
-    STATE_DEBUG = 0
+    STATE_DEBUG = false
 else
-    STATE_DEBUG = 1
+    STATE_DEBUG = true
+
+    function do_sometimes(dummy)
+    end
 end
 
 function set_dref(dref_name, dref_value)
-    if STATE_DEBUG == 1 then
+    if STATE_DEBUG == true then
         print(dref_name .. ' = ' .. dref_value)
     else
         set(dref_name, dref_value)
     end
 end
 
+function get_dref(dref_name)
+    if STATE_DEBUG == true then
+        return nil
+    else
+        get(dref_name)
+    end
+end
+
 function log(text)
     local msg = 'failscript: ' .. text
 
-    if STATE_DEBUG == 1 then
+    if STATE_DEBUG == true then
         print(msg)
     else
         logMsg(msg)
@@ -94,7 +113,7 @@ function read_profile(path)
 end
 
 function set_failures()
-    if STATE_FAILED == 1 then
+    if STATE_FAILED == true then
         return
     end
 
@@ -119,20 +138,93 @@ function set_failures()
         log('No failure active.')
     end
 
-    STATE_FAILED = 1
+    STATE_FAILED = true
 end
 
 function set_single_failure(fail_data)
     if fail_data["random"] <= fail_data["p_start"] then
-        set_dref(fail_data["dataref"], FAILURE_INOP)
-        log(fail_data["dataref"] .. ' has failed')
+        local ft = math.random(1, 3) -- Fail type: 1 immediate, 2 mean time, 3 at speed, 4 at height
+
+        if ft == 1 then
+            set_immediate_failure(fail_data)
+        elseif ft == 2 then
+            set_delayed_failure(fail_data)
+        elseif ft == 3 then
+            set_speed_failure(fail_data)
+        else
+            set_height_failure(fail_data)
+        end
     end
+end
+
+function set_immediate_failure(fail_data)
+    set_dref(fail_data["dataref"], FAILURE_INOP)
+    log(fail_data["dataref"] .. ' has failed')
+end
+
+function set_delayed_failure(fail_data)
+    set_dref(fail_data["dataref"], FAILURE_MEAN_TIME)
+    STATE_FAIL_AT_MEAN_TIME[#STATE_FAIL_AT_MEAN_TIME+1] = fail_data
+
+    log(fail_data["dataref"] .. ' will fail in mean time')
+end
+
+function set_speed_failure(fail_data)
+    set_dref(fail_data["dataref"], FAILURE_EXACT_SPEED)
+    STATE_FAIL_AT_SPEED[#STATE_FAIL_AT_SPEED+1] = fail_data
+
+    log(fail_data["dataref"] .. ' will fail at exact speed')
+end
+
+function set_height_failure(fail_data)
+    set_dref(fail_data["dataref"], FAILURE_EXACT_HEIGHT)
+    STATE_FAIL_AT_HEIGHT[#STATE_FAIL_AT_HEIGHT+1] = fail_data
+
+    log(fail_data["dataref"] .. ' will fail at exact height')
 end
 
 function init()
     math.randomseed(os.time())
 
+    STATE_FAIL_SPEED = math.random() * CFG_MAX_FAIL_SPEED
+    STATE_FAIL_HEIGHT = math.random() * CFG_MAX_FAIL_HEIGHT
+
+    set_dref("sim/operation/failures/mean_time_between_failure_hrs", math.random() * CFG_MAX_TIME_BETWEEN_FAILURES)
+    set_dref("sim/operation/failures/enable_random_failures", 1)
+
     set_failures()
+
+    if STATE_DEBUG == true then
+        log('Fail speed is ' .. STATE_FAIL_SPEED)
+        log('Fail height is ' .. STATE_FAIL_HEIGHT)
+    end
+
+    local needs_fail_loop = (#STATE_FAIL_AT_SPEED > 0) or (#STATE_FAIL_AT_HEIGHT > 0) or (#STATE_FAIL_AT_MEAN_TIME > 0)
+
+    if needs_fail_loop then
+        do_sometimes('fail_loop')
+    end
+end
+
+function fail_loop()
+    local speed = get_dref('sim/flightmodel/position/groundspeed') * 1.943844 -- m/s to kn
+    local height = get_dref('sim/flightmodel/position/y_agl') * 3.28084 -- m to ft
+
+    if speed > STATE_FAIL_SPEED then
+        for i, fail_data in pairs(STATE_FAIL_AT_SPEED) do
+            set_immediate_failure(fail_data)
+        end
+
+        STATE_FAIL_AT_SPEED = {}
+    end
+
+    if height > STATE_FAIL_HEIGHT then
+        for i, fail_data in pairs(STATE_FAIL_AT_HEIGHT) do
+            set_immediate_failure(fail_data)
+        end
+
+        STATE_FAIL_AT_HEIGHT = {}
+    end
 end
 
 init()
