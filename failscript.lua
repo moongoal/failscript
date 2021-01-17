@@ -23,9 +23,11 @@ FAILURE_INOP = 6 -- = inoperative
 STATE_FAILED = false
 STATE_FAIL_SPEED = 0 -- Speed at which FAILURE_EXACT_SPEED failures will occur - computed in init()
 STATE_FAIL_HEIGHT = 0 -- Height at which FAILURE_EXACT_SPEED failures will occur - computed in init()
-STATE_FAIL_AT_MEAN_TIME = {} -- Array of fail_data not yet failed
+STATE_FAIL_TIME = 0 -- Next time systems will fail
+STATE_FAIL_LATER = {} -- Array of fail_data not yet failed
 STATE_FAIL_AT_SPEED = {} -- Array of fail_data not yet failed
 STATE_FAIL_AT_HEIGHT = {} -- Array of fail_data not yet failed
+STATE_TIME_START = os.time() -- Start of simulation
 
 -- Enable debug mode if running standalone
 -- Debug mode will not interact with X-Plane nut instead output to console every dataref change
@@ -164,9 +166,9 @@ end
 
 function set_delayed_failure(fail_data)
     set_dref(fail_data["dataref"], FAILURE_MEAN_TIME)
-    STATE_FAIL_AT_MEAN_TIME[#STATE_FAIL_AT_MEAN_TIME+1] = fail_data
+    STATE_FAIL_LATER[#STATE_FAIL_LATER+1] = fail_data
 
-    log(fail_data["dataref"] .. ' will fail in mean time')
+    log(fail_data["dataref"] .. ' will fail later')
 end
 
 function set_speed_failure(fail_data)
@@ -183,15 +185,24 @@ function set_height_failure(fail_data)
     log(fail_data["dataref"] .. ' will fail at exact height')
 end
 
+function set_next_fail_time()
+    local next_fail_relative = math.random() * CFG_MAX_TIME_BETWEEN_FAILURES * 3600
+
+    STATE_FAIL_TIME = STATE_FAIL_TIME + next_fail_relative
+end
+
 function init()
     math.randomseed(os.time())
 
     STATE_FAIL_SPEED = math.random() * CFG_MAX_FAIL_SPEED
     STATE_FAIL_HEIGHT = math.random() * CFG_MAX_FAIL_HEIGHT
+    STATE_FAIL_TIME = STATE_TIME_START
 
-    set_dref("sim/operation/failures/mean_time_between_failure_hrs", math.random() * CFG_MAX_TIME_BETWEEN_FAILURES)
-    set_dref("sim/operation/failures/enable_random_failures", 1)
+    -- FIXME: Implement own timed failure management to avoid catastrophic kaboom
+    -- set_dref("sim/operation/failures/mean_time_between_failure_hrs", math.random() * CFG_MAX_TIME_BETWEEN_FAILURES)
+    -- set_dref("sim/operation/failures/enable_random_failures", 1)
 
+    set_next_fail_time()
     set_failures()
 
     if STATE_DEBUG == true then
@@ -199,7 +210,7 @@ function init()
         log('Fail height is ' .. STATE_FAIL_HEIGHT)
     end
 
-    local needs_fail_loop = (#STATE_FAIL_AT_SPEED > 0) or (#STATE_FAIL_AT_HEIGHT > 0) or (#STATE_FAIL_AT_MEAN_TIME > 0)
+    local needs_fail_loop = (#STATE_FAIL_AT_SPEED > 0) or (#STATE_FAIL_AT_HEIGHT > 0) or (#STATE_FAIL_LATER > 0)
 
     if needs_fail_loop then
         do_sometimes('fail_loop')
@@ -224,6 +235,17 @@ function fail_loop()
         end
 
         STATE_FAIL_AT_HEIGHT = {}
+    end
+
+    if #STATE_FAIL_LATER > 0 then
+        local cur_time = os.time()
+
+        if cur_time >= STATE_FAIL_TIME then
+            local fail_data = table.remove(STATE_FAIL_LATER, 1)
+
+            set_immediate_failure(fail_data)
+            set_next_fail_time()
+        end
     end
 end
 
