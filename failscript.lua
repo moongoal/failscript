@@ -1,10 +1,12 @@
 if SCRIPT_DIRECTORY == nil then
     SCRIPT_DIRECTORY = './'
+    AIRCRAFT_PATH = './'
 end
 
 -- config
---CFG_FILE = 'D:\\Users\\moongoal\\SteamLibrary\\steamapps\\common\\X-Plane 11\\Resources\\plugins\\FlyWithLua\\Scripts\\failprofile.csv'
 CFG_FILE = SCRIPT_DIRECTORY .. 'failprofile.csv'
+CFG_AIRCRAFT_FILE = AIRCRAFT_PATH .. 'failprofile.csv'
+CFG_STATE_FILE = AIRCRAFT_PATH .. 'failstate.kaboom'
 CFG_MAX_TIME_BETWEEN_FAILURES = 3 -- Max mean time between failures (hrs)
 CFG_MAX_FAIL_SPEED = 300 -- Max failure speed (kts, groundspeed)
 CFG_MAX_FAIL_HEIGHT = 40000 -- Max failure height (feet, AGL)
@@ -20,7 +22,7 @@ FAILURE_CTRL = 5 -- = fail if CTRL f or JOY
 FAILURE_INOP = 6 -- = inoperative
 
 -- state
-STATE_FAILED = false
+STATE_FAILED = false -- TODO: Could potentially be removed
 STATE_FAIL_SPEED = 0 -- Speed at which FAILURE_EXACT_SPEED failures will occur - computed in init()
 STATE_FAIL_HEIGHT = 0 -- Height at which FAILURE_EXACT_SPEED failures will occur - computed in init()
 STATE_FAIL_TIME = 0 -- Next time systems will fail
@@ -28,6 +30,8 @@ STATE_FAIL_LATER = {} -- Array of fail_data not yet failed
 STATE_FAIL_AT_SPEED = {} -- Array of fail_data not yet failed
 STATE_FAIL_AT_HEIGHT = {} -- Array of fail_data not yet failed
 STATE_TIME_START = os.time() -- Start of simulation
+STATE_PROFILE = {} -- Every loaded record for the session
+STATE_FAILED_DATAREFS = {} -- Array of failed datarefs
 
 -- Enable debug mode if running standalone
 -- Debug mode will not interact with X-Plane nut instead output to console every dataref change
@@ -36,8 +40,22 @@ if XPLANE_VERSION then
 else
     STATE_DEBUG = true
 
+    -- Normally provided by X-Plane
     function do_sometimes(dummy)
     end
+end
+
+function file_exists(name)
+    local f=io.open(name,"r")
+    local exists = false
+
+    if f~=nil then
+        io.close(f)
+
+        return true
+    end
+
+    return exists
 end
 
 function set_dref(dref_name, dref_value)
@@ -114,6 +132,40 @@ function read_profile(path)
     return profile
 end
 
+function merge_profiles(p1, p2)
+    local p_out = {}
+
+    for k, v in pairs(p1) do
+        p_out[k] = v
+    end
+
+    for k, v in pairs(p2) do
+        p_out[k] = v
+    end
+
+    return p_out
+end
+
+function read_aircraft_state(path)
+    local state = {}
+
+    if file_exists(path) then
+        state = io.lines(path)
+    end
+
+    return state
+end
+
+function write_aircraft_state(path, state)
+    local f = io.open(path, 'w')
+
+    for idx, dref in pairs(state) do
+        f:write(dref .. '\n')
+    end
+
+    io.close(f)
+end
+
 function set_failures()
     if STATE_FAILED == true then
         return
@@ -122,9 +174,24 @@ function set_failures()
     log('Loading profile...')
     local any_failure = false
     local profile = read_profile(CFG_FILE)
+    local aircraft_profile = read_profile(CFG_AIRCRAFT_FILE)
+
+    log('Loading state...')
+    local aircraft_state = read_aircraft_state(CFG_STATE_FILE)
+
+    STATE_PROFILE = merge_profiles(profile, aircraft_profile)
+
+    if #aircraft_state > 0 then
+        log('Restoring failures...')
+        for idx, dref in pairs(aircraft_state) do
+            local fail_data = { ['dataref'] = dref }
+
+            set_immediate_failure(fail_data)
+        end
+    end
 
     log('Generating failures...')
-    for d, p in pairs(profile) do
+    for d, p in pairs(STATE_PROFILE) do
         local r = math.random()
         local fail_data = {
             ["dataref"] = d,
@@ -198,16 +265,12 @@ function init()
     STATE_FAIL_HEIGHT = math.random() * CFG_MAX_FAIL_HEIGHT
     STATE_FAIL_TIME = STATE_TIME_START
 
-    -- FIXME: Implement own timed failure management to avoid catastrophic kaboom
-    -- set_dref("sim/operation/failures/mean_time_between_failure_hrs", math.random() * CFG_MAX_TIME_BETWEEN_FAILURES)
-    -- set_dref("sim/operation/failures/enable_random_failures", 1)
-
     set_next_fail_time()
     set_failures()
 
     if STATE_DEBUG == true then
-        log('Fail speed is ' .. STATE_FAIL_SPEED)
-        log('Fail height is ' .. STATE_FAIL_HEIGHT)
+        log('Fail speed is ' .. STATE_FAIL_SPEED .. ' kt GS')
+        log('Fail height is ' .. STATE_FAIL_HEIGHT .. ' ft AGL')
     end
 
     local needs_fail_loop = (#STATE_FAIL_AT_SPEED > 0) or (#STATE_FAIL_AT_HEIGHT > 0) or (#STATE_FAIL_LATER > 0)
