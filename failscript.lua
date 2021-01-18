@@ -1,6 +1,19 @@
-if SCRIPT_DIRECTORY == nil then
+STATE_DEBUG = false
+
+if SCRIPT_DIRECTORY == nil then -- No X-Plane detected. Add mocks
     SCRIPT_DIRECTORY = './'
     AIRCRAFT_PATH = './'
+
+    -- Enable debug mode if running standalone
+    -- Debug mode will not interact with X-Plane nut instead output to console every dataref change
+    STATE_DEBUG = true
+
+    function do_sometimes(dummy)
+    end
+
+    function DataRef(varname, dref)
+        _G[varname] = 0
+    end
 end
 
 -- config
@@ -21,6 +34,10 @@ FAILURE_EXACT_HEIGHT = 4 -- = fail at exact altitude AGL
 FAILURE_CTRL = 5 -- = fail if CTRL f or JOY
 FAILURE_INOP = 6 -- = inoperative
 
+-- datarefs
+DataRef('SPEED_GS', 'sim/flightmodel/position/groundspeed')
+DataRef('HEIGHT_AGL', 'sim/flightmodel/position/y_agl')
+
 -- state
 STATE_FAILED = false -- TODO: Could potentially be removed
 STATE_FAIL_SPEED = 0 -- Speed at which FAILURE_EXACT_SPEED failures will occur - computed in init()
@@ -33,16 +50,10 @@ STATE_TIME_START = os.time() -- Start of simulation
 STATE_PROFILE = {} -- Every loaded record for the session
 STATE_FAILED_DATAREFS = {} -- Array of failed datarefs
 
--- Enable debug mode if running standalone
--- Debug mode will not interact with X-Plane nut instead output to console every dataref change
 if XPLANE_VERSION then
-    STATE_DEBUG = false
 else
-    STATE_DEBUG = true
 
     -- Normally provided by X-Plane
-    function do_sometimes(dummy)
-    end
 end
 
 function file_exists(name)
@@ -123,6 +134,16 @@ function parse_profile_csv(csv)
     end
 
     return profile
+end
+
+-- Get ground speed (kn)
+function get_gs()
+    return SPEED_GS * 1.943844 -- m/s to kn
+end
+
+-- Get height AGL (ft)
+function get_agl()
+    return HEIGHT_AGL * 3.28084 -- m to ft
 end
 
 function read_profile(path)
@@ -281,8 +302,8 @@ function init()
 end
 
 function fail_loop()
-    local speed = get_dref('sim/flightmodel/position/groundspeed') * 1.943844 -- m/s to kn
-    local height = get_dref('sim/flightmodel/position/y_agl') * 3.28084 -- m to ft
+    local speed = get_gs()
+    local height = get_agl()
 
     if speed > STATE_FAIL_SPEED then
         for i, fail_data in pairs(STATE_FAIL_AT_SPEED) do
